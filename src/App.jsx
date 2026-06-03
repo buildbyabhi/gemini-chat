@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
-import { GoogleGenAI } from '@google/genai'
 import { marked } from 'marked'
 
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY
+const API_KEY = import.meta.env.VITE_OPENROUTER_KEY
+const API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const MODEL = 'nvidia/nemotron-3-super-120b-a12b:free'
 
-// Configure marked for safe rendering
 marked.setOptions({ breaks: true, gfm: true })
 
 const SUGGESTIONS = [
@@ -56,7 +56,6 @@ export default function App() {
   const [error, setError] = useState('')
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
-  const chatRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -66,47 +65,56 @@ export default function App() {
     const userText = (text || input).trim()
     if (!userText || loading) return
     if (!API_KEY) {
-      setError('⚠️ No API key set. Add VITE_GEMINI_API_KEY to your .env file.')
+      setError('⚠️ No API key set. Add VITE_OPENROUTER_KEY to your .env.local file.')
       return
     }
 
     setInput('')
     setError('')
-    setMessages(prev => [...prev, { role: 'user', text: userText }])
+    const newMessages = [...messages, { role: 'user', text: userText }]
+    setMessages(newMessages)
     setLoading(true)
 
     try {
-      const ai = new GoogleGenAI({ apiKey: API_KEY })
+      // Build conversation history — skip error messages
+      const history = newMessages
+        .filter(m => !m.text.startsWith('❌'))
+        .map(m => ({
+          role: m.role === 'ai' ? 'assistant' : 'user',
+          content: m.text,
+        }))
 
-      // Build conversation history for context
-      const history = messages.map(m => ({
-        role: m.role === 'ai' ? 'model' : 'user',
-        parts: [{ text: m.text }],
-      }))
-
-      const chat = ai.chats.create({
-        model: 'gemini-2.0-flash',
-        history,
-        config: {
-          systemInstruction: 'You are GeminiChat, a helpful, friendly, and intelligent AI assistant. Respond clearly and concisely. Use markdown formatting for code, lists, and structure when helpful.',
+      // Prepend system message
+      const allMessages = [
+        {
+          role: 'system',
+          content: 'You are GeminiChat, a helpful, friendly, and intelligent AI assistant. Respond clearly and concisely. Use markdown formatting for code, lists, and structure when helpful.',
         },
+        ...history,
+      ]
+
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://gemini-chat-buildbyabhi.vercel.app',
+          'X-Title': 'GeminiChat',
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: allMessages,
+        }),
       })
 
-      // Streaming response
-      let fullText = ''
-      setMessages(prev => [...prev, { role: 'ai', text: '' }])
-
-      const stream = await chat.sendMessageStream({ message: userText })
-
-      for await (const chunk of stream) {
-        const chunkText = chunk.text ?? ''
-        fullText += chunkText
-        setMessages(prev => {
-          const updated = [...prev]
-          updated[updated.length - 1] = { role: 'ai', text: fullText }
-          return updated
-        })
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData?.error?.message || `HTTP ${response.status}`)
       }
+
+      const data = await response.json()
+      const aiText = data.choices?.[0]?.message?.content ?? '...'
+      setMessages(prev => [...prev, { role: 'ai', text: aiText }])
     } catch (err) {
       setMessages(prev => [...prev, {
         role: 'ai',
@@ -135,7 +143,6 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Ambient background orbs */}
       <div className="orb orb1" />
       <div className="orb orb2" />
       <div className="orb orb3" />
@@ -156,7 +163,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="logo-title">GeminiChat</h1>
-            <span className="logo-sub">Powered by Google Gemini 2.0 Flash</span>
+            <span className="logo-sub">Powered by Nvidia Nemotron 120B via OpenRouter</span>
           </div>
         </div>
         <div className="header-right">
@@ -175,7 +182,7 @@ export default function App() {
       </header>
 
       {/* Chat Area */}
-      <main className="chat-area" ref={chatRef}>
+      <main className="chat-area">
         {isEmpty ? (
           <div className="welcome">
             <div className="welcome-icon">
@@ -208,10 +215,9 @@ export default function App() {
         )}
       </main>
 
-      {/* Error */}
       {error && <div className="error-bar">{error}</div>}
 
-      {/* Input Area */}
+      {/* Input */}
       <footer className="input-area">
         <div className="input-wrapper">
           <textarea
@@ -228,7 +234,6 @@ export default function App() {
             className={`send-btn ${(!input.trim() || loading) ? 'disabled' : ''}`}
             onClick={() => sendMessage()}
             disabled={!input.trim() || loading}
-            title="Send message"
           >
             {loading ? (
               <svg viewBox="0 0 24 24" fill="none" width="18" height="18" stroke="currentColor" strokeWidth="2" className="spin">
